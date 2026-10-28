@@ -109,8 +109,8 @@ class Config:
     """默认是否输出详细响应"""
     DEFAULT_VERBOSE = False
 
-    """默认域名"""
-    DOMAINS = ["glados.cloud", "railgun.info"]
+    """默认域名（可经 GLADOS_DOMAINS 环境变量覆盖，逗号分隔）"""
+    DOMAINS = ["glados.cloud"]
 
     """兑换计划列表"""
     EXCHANGE_PLANS = {
