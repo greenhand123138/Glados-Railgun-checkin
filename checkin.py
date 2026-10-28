@@ -1,3 +1,4 @@
+import json
 import os
 import sys
 from dataclasses import asdict, dataclass
@@ -99,6 +100,9 @@ class Config:
 
     ENV_PUSH_KEY = "PUSHDEER_SENDKEY"
     ENV_SERVERCHAN_KEY = "SERVERCHAN_SENDKEY"
+    ENV_FEISHU_APP_ID = "FEISHU_APP_ID"
+    ENV_FEISHU_APP_SECRET = "FEISHU_APP_SECRET"
+    ENV_FEISHU_CHAT_ID = "FEISHU_CHAT_ID"
     ENV_COOKIES = "GLADOS_COOKIES"
     ENV_EXCHANGE_PLAN = "GLADOS_EXCHANGE_PLAN"
     ENV_VERBOSE = "GLADOS_VERBOSE"
@@ -122,6 +126,9 @@ class Config:
     def __init__(self):
         self.push_key: str = ""
         self.serverchan_key: str = ""
+        self.feishu_app_id: str = ""
+        self.feishu_app_secret: str = ""
+        self.feishu_chat_id: str = ""
         self.cookies_list: List[str] = []
         self.exchange_plan: str = self.DEFAULT_EXCHANGE_PLAN
         self.verbose: bool = self.DEFAULT_VERBOSE
@@ -147,6 +154,17 @@ class Config:
         else:
             self.serverchan_key = serverchan_key_env
 
+        feishu_app_id_env: Optional[str] = os.environ.get(self.ENV_FEISHU_APP_ID)
+        feishu_app_secret_env: Optional[str] = os.environ.get(self.ENV_FEISHU_APP_SECRET)
+        feishu_chat_id_env: Optional[str] = os.environ.get(self.ENV_FEISHU_CHAT_ID)
+
+        if feishu_app_id_env and feishu_app_secret_env and feishu_chat_id_env:
+            self.feishu_app_id = feishu_app_id_env
+            self.feishu_app_secret = feishu_app_secret_env
+            self.feishu_chat_id = feishu_chat_id_env
+        elif feishu_app_id_env or feishu_app_secret_env or feishu_chat_id_env:
+            logger.warning(f"{LogEmoji.WARNING} 飞书推送需同时设置 '{self.ENV_FEISHU_APP_ID}'、'{self.ENV_FEISHU_APP_SECRET}'、'{self.ENV_FEISHU_CHAT_ID}'，当前不完整，跳过飞书推送。")
+
         if not raw_cookies_env:
             logger.warning(f"{LogEmoji.WARNING} 环境变量 '{self.ENV_COOKIES}' 未设置。")
             self.cookies_list = []
@@ -167,7 +185,7 @@ class Config:
                 self.exchange_plan = self.DEFAULT_EXCHANGE_PLAN
 
         logger.info(f"{LogEmoji.INFO} 共加载了 {len(self.cookies_list)} 个 Cookie 用于签到。")
-        logger.info(f"{LogEmoji.INFO} 当前 {self.ENV_PUSH_KEY} {'已设置' if push_key_env else '未设置'}，{self.ENV_SERVERCHAN_KEY} {'已设置' if serverchan_key_env else '未设置'}。")
+        logger.info(f"{LogEmoji.INFO} 当前 {self.ENV_PUSH_KEY} {'已设置' if push_key_env else '未设置'}，{self.ENV_SERVERCHAN_KEY} {'已设置' if serverchan_key_env else '未设置'}，飞书 {'已设置' if self.feishu_app_id else '未设置'}。")
         logger.info(f"{LogEmoji.INFO} 当前 {self.ENV_EXCHANGE_PLAN}: {self.exchange_plan}。")
 
         if verbose_env is not None:
@@ -554,6 +572,61 @@ class ServerChanBackend(PushBackend):
             return False
 
 
+class FeishuBackend(PushBackend):
+    """飞书 自建应用机器人后端（OpenAPI：tenant_access_token + im/v1/messages）"""
+
+    name = "飞书"
+
+    TOKEN_URL = "https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal"
+    MESSAGE_URL = "https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=chat_id"
+
+    def __init__(self, app_id: str, app_secret: str, chat_id: str):
+        self.app_id = app_id
+        self.app_secret = app_secret
+        self.chat_id = chat_id
+
+    def _get_token(self) -> Optional[str]:
+        """获取 tenant_access_token（有效期约 2 小时，每次推送现取即可）"""
+        try:
+            resp = requests.post(
+                self.TOKEN_URL,
+                json={"app_id": self.app_id, "app_secret": self.app_secret},
+                timeout=(60, 120),
+            )
+            data = resp.json()
+            if data.get("code") == 0:
+                return data.get("tenant_access_token")
+            logger.error(f"{LogEmoji.ERROR} [{self.name}] 获取 tenant_access_token 失败: {data.get('msg')}")
+        except Exception as e:
+            logger.error(f"{LogEmoji.ERROR} [{self.name}] 获取 tenant_access_token 异常: {e}")
+        return None
+
+    def send(self, title: str, payload: dict) -> bool:
+        token = self._get_token()
+        if not token:
+            return False
+        body = {
+            "receive_id": self.chat_id,
+            "msg_type": "text",
+            "content": json.dumps({"text": f"{title}\n{self._render(payload)}"}),
+        }
+        try:
+            resp = requests.post(
+                self.MESSAGE_URL,
+                headers={"Authorization": f"Bearer {token}"},
+                json=body,
+                timeout=(60, 120),
+            )
+            data = resp.json()
+            if data.get("code") == 0:
+                return True
+            logger.error(f"{LogEmoji.ERROR} [{self.name}] 推送失败: {data.get('code')} {data.get('msg')}")
+            return False
+        except Exception as e:
+            logger.error(f"{LogEmoji.ERROR} [{self.name}] 推送异常: {e}")
+            return False
+
+
 class PushService:
     """推送服务：聚合多个后端，向全部已配置后端发送（都发）"""
 
@@ -564,6 +637,8 @@ class PushService:
                 self.backends.append(PushDeerBackend(config.push_key))
             if getattr(config, "serverchan_key", ""):
                 self.backends.append(ServerChanBackend(config.serverchan_key))
+            if getattr(config, "feishu_app_id", "") and getattr(config, "feishu_app_secret", "") and getattr(config, "feishu_chat_id", ""):
+                self.backends.append(FeishuBackend(config.feishu_app_id, config.feishu_app_secret, config.feishu_chat_id))
 
     def send(self, title: str, payload: dict) -> bool:
         """向所有已配置后端发送推送，只要有一个成功即视为成功"""
