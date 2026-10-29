@@ -232,7 +232,7 @@ def build_message(days: Dict[str, dict], current: Dict[str, str], plan: str) -> 
                 left = d["left"]
     if left is not None and left <= 5:
         lines.append("")
-        lines.append(f"🔔 套餐只剩 {left} 天，记得续费或攒积分（plan100 = 100 分换 10 天）")
+        lines.append(f"🔔 套餐只剩 {left} 天，记得续费或攒积分（100 分可换 10 天）")
 
     try:
         points_num = int(current["num"]) if current["num"] else None
@@ -240,7 +240,7 @@ def build_message(days: Dict[str, dict], current: Dict[str, str], plan: str) -> 
         points_num = None
     if points_num is not None and points_num >= 100 and plan in ("none", ""):
         lines.append("")
-        lines.append(f"💡 积分已够 {points_num}，可在仓库 Secrets 设 GLADOS_EXCHANGE_PLAN=plan100 自动兑换")
+        lines.append(f"💡 积分已够 {points_num}，可在仓库 Secrets 设 GLADOS_EXCHANGE_PLAN 自动兑换")
 
     return title, "  \n".join(lines)  # 行尾两空格 = Markdown 硬换行（Server酱），PushDeer 里不可见
 
